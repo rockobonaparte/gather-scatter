@@ -17,26 +17,39 @@ def run_workload():
 class Gatherer(object):
     def __init__(self):
         self.thread = threading.Thread(target=self._gatherer_agent)
-        self.stop_signal = False
+        self.channel = None
+#        self.stop_signal = False
 
     def _gatherer_agent(self):
         connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-        channel = connection.channel()
+        self.channel = connection.channel()
 
-        channel.exchange_declare(exchange='synchronization', type='topic')
+        self.channel.exchange_declare(exchange='synchronization', type='topic')
+        result = self.channel.queue_declare(exclusive=True)
+        queue_name = result.method.queue
 
-        # TODO: Switch to condition variables so we don't have to poll.
-        # Furthermore, this variable could change in a different cache instead
-        # of ours, and basically commit us to a deadlock. :(
-        while not self.stop_signal:
-            pass
+        self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='*')
+        self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
+        print("Gatherer has started consuming")
+        self.channel.start_consuming()
+        print("Gatherer has stopped consuming")
+
+
+    def inbound_message(self, ch, method, properties, body):
+        print("Gather is receiving a message!")
+        print(" [x] %r:%r" % (method.routing_key, body))
+        self.channel.stop_consuming()
+
+    def _monitor_agent(self):
+        connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+        self.channel = connection.channel()
 
     def start(self):
-        self.stop_signal = False
+#        self.stop_signal = False
         self.thread.start()
 
     def stop(self):
-        self.stop_signal = True
+#        self.stop_signal = True
         self.thread.join()
 
 
@@ -48,7 +61,7 @@ class WorkloadMonitor(object):
         self.channel = None
 
     def inbound_message(self, ch, method, properties, body):
-        print("Receiving a message!")
+        print("Monitor is receiving a message!")
         print(" [x] %r:%r" % (method.routing_key, body))
         self.channel.stop_consuming()
 
