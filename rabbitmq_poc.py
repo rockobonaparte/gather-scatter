@@ -9,7 +9,7 @@ def run_workload():
     #channel.exchange_declare(exchange='synchronization', type='topic')
 
     print("Sending a message!")
-    channel.basic_publish(exchange='synchronization', routing_key='workload', body="Hello!")
+    channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload ready")
     print("Sent a message!")
     connection.close()
 
@@ -18,7 +18,8 @@ class Gatherer(object):
     def __init__(self):
         self.thread = threading.Thread(target=self._gatherer_agent)
         self.channel = None
-#        self.stop_signal = False
+        self.workload_ready = False
+        self.monitors_ready = False
 
     def _gatherer_agent(self):
         connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
@@ -36,20 +37,26 @@ class Gatherer(object):
 
 
     def inbound_message(self, ch, method, properties, body):
-        print("Gather is receiving a message!")
+        print("Gatherer is receiving a message!")
         print(" [x] %r:%r" % (method.routing_key, body))
-        self.channel.stop_consuming()
+        if body == b"workload ready":
+            self.workload_ready = True
+            print("propagating ready signal to monitors")
+            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="ready")
+        elif body == b"ready":
+            self.monitors_ready = True
+            if self.workload_ready:
+                self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="go")
+                self.channel.stop_consuming()
 
     def _monitor_agent(self):
         connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
         self.channel = connection.channel()
 
     def start(self):
-#        self.stop_signal = False
         self.thread.start()
 
     def stop(self):
-#        self.stop_signal = True
         self.thread.join()
 
 
@@ -57,13 +64,16 @@ class WorkloadMonitor(object):
 
     def __init__(self, name):
         self.thread = threading.Thread(target=self._monitor_agent)
-#        self.name = name
         self.channel = None
 
     def inbound_message(self, ch, method, properties, body):
         print("Monitor is receiving a message!")
         print(" [x] %r:%r" % (method.routing_key, body))
-        self.channel.stop_consuming()
+        if body == b"ready":
+            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="ready")
+        elif body == b"go":
+            print("Proceeding!")
+            self.channel.stop_consuming()
 
     def _monitor_agent(self):
         connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
@@ -73,7 +83,7 @@ class WorkloadMonitor(object):
         result = self.channel.queue_declare(exclusive=True)
         queue_name = result.method.queue
 
-        self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='*')
+        self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='gatherer')
         self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
         print("Monitor has started consuming")
         self.channel.start_consuming()
