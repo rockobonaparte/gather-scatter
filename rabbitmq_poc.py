@@ -7,11 +7,17 @@ class Workload(object):
         self.thread = threading.Thread(target=self._workload_agent)
         self.channel = None
         self.connection = None
+        self.received_go = False
+        self.go_signal = threading.Condition()
 
     def inbound_message(self, ch, method, properties, body):
         body_txt = body.decode("utf-8")
         if body_txt == "go":
             print("Workload was given go signal!")
+            with self.go_signal:
+                self.received_go = True
+                self.go_signal.notify()
+
             self.connection.close()
 
 
@@ -37,6 +43,12 @@ class Workload(object):
     def stop(self):
         self.thread.join()
 
+    def wait_for_go(self, timeout_seconds):
+        with self.go_signal:
+            if not self.received_go:
+                self.go_signal.wait(timeout_seconds)
+        if not self.received_go:
+            raise Exception("Workload did not receive go signal. It is likely something was aborted")
 
 class Gatherer(object):
     def __init__(self):
@@ -146,6 +158,9 @@ if __name__ == "__main__":
 
     workload = Workload()
     workload.start()
+
+    workload.wait_for_go(5)
+    print("Main program: Workload got go signal and is continuing!")
 
     gatherer.stop()
     monitor1.stop()
