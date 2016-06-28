@@ -2,16 +2,40 @@ import pika
 import threading
 import time
 
-def run_workload():
-    connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-    channel = connection.channel()
+class Workload(object):
+    def __init__(self):
+        self.thread = threading.Thread(target=self._workload_agent)
+        self.channel = None
+        self.connection = None
 
-    #channel.exchange_declare(exchange='synchronization', type='topic')
+    def inbound_message(self, ch, method, properties, body):
+        body_txt = body.decode("utf-8")
+        if body_txt == "go":
+            print("Workload was given go signal!")
+            self.connection.close()
 
-    print("Sending a message!")
-    channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload ready")
-    print("Sent a message!")
-    connection.close()
+
+    def _workload_agent(self):
+        self.connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+        self.channel = self.connection.channel()
+
+        result = self.channel.queue_declare(exclusive=True)
+        queue_name = result.method.queue
+
+        self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='*')
+        self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
+
+        self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload ready")
+
+        print("Workload has started consuming")
+        self.channel.start_consuming()
+        print("Workload has stopped consuming")
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.thread.join()
 
 
 class Gatherer(object):
@@ -120,8 +144,10 @@ if __name__ == "__main__":
     # signal will get missed. Ideally, this wouldn't really be that big of a deal...
     time.sleep(3)
 
-    run_workload()
+    workload = Workload()
+    workload.start()
 
     gatherer.stop()
     monitor1.stop()
     monitor2.stop()
+    workload.stop()
