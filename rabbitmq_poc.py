@@ -18,8 +18,6 @@ class Workload(object):
                 self.received_go = True
                 self.go_signal.notify()
 
-            self.connection.close()
-
 
     def _workload_agent(self):
         self.connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
@@ -41,6 +39,7 @@ class Workload(object):
         self.thread.start()
 
     def stop(self):
+        self.connection.close()
         self.thread.join()
 
     def wait_for_go(self, timeout_seconds):
@@ -50,9 +49,16 @@ class Workload(object):
         if not self.received_go:
             raise Exception("Workload did not receive go signal. It is likely something was aborted")
 
+    def send_completed(self):
+        print("Workload has issued stop signal")
+        self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed")
+#        self.channel.stop_consuming()
+#        self.connection.close()
+
 class Gatherer(object):
     def __init__(self):
         self.thread = threading.Thread(target=self._gatherer_agent)
+        self.connection = None
         self.channel = None
         self.workload_ready = False
         self.monitors_ready = False
@@ -60,8 +66,8 @@ class Gatherer(object):
         self.monitor_aliases = []
 
     def _gatherer_agent(self):
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-        self.channel = connection.channel()
+        self.connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+        self.channel = self.connection.channel()
 
         self.channel.exchange_declare(exchange='synchronization', type='topic')
         result = self.channel.queue_declare(exclusive=True)
@@ -75,30 +81,29 @@ class Gatherer(object):
 
 
     def inbound_message(self, ch, method, properties, body):
-#        print("Gatherer is receiving a message!")
-#        print(" [x] %r:%r" % (method.routing_key, body))
         body_txt = body.decode("utf-8")
         if body_txt == "workload ready":
             self.workload_ready = True
             print("propagating ready signal to monitors")
             self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="ready")
-        elif body_txt == "ready":
+        elif body_txt == "workload completed":
+            self.workload_ready = False
+            print("propagating stop signal to monitors")
+            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="stop")
+        elif body_txt == "agent ready":
             self.monitors_ready = True
             if self.workload_ready:
+                print("propagating go signal to all receivers")
                 self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="go")
-                self.channel.stop_consuming()
         elif body_txt.startswith("identify"):
             agent = body_txt[9:]
             print("Agent %s identified" % agent)
-
-    def _monitor_agent(self):
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-        self.channel = connection.channel()
 
     def start(self):
         self.thread.start()
 
     def stop(self):
+        self.connection.close()
         self.thread.join()
 
 
@@ -110,12 +115,12 @@ class WorkloadMonitor(object):
         self.name = name
 
     def inbound_message(self, ch, method, properties, body):
-#        print("Monitor %s is receiving a message!" % self.name)
-#        print(" [x] %r:%r" % (method.routing_key, body))
         if body == b"ready":
-            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="ready")
+            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="agent ready")
         elif body == b"go":
             print("Monitor %s is proceeding!" % self.name)
+        elif body == b"stop":
+            print("Monitor %s is stopping!" % self.name)
             self.channel.stop_consuming()
 
     def _monitor_agent(self):
@@ -130,7 +135,6 @@ class WorkloadMonitor(object):
         self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
         self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="identify %s" % self.name)
 
-        print("Monitor %s has started consuming" % self.name)
         self.channel.start_consuming()
         print("Monitor %s has stopped consuming" % self.name)
 
@@ -159,10 +163,21 @@ if __name__ == "__main__":
     workload = Workload()
     workload.start()
 
-    workload.wait_for_go(5)
+    workload.wait_for_go(3)
     print("Main program: Workload got go signal and is continuing!")
 
-    gatherer.stop()
-    monitor1.stop()
-    monitor2.stop()
+    time.sleep(1.5)
+
+    workload.send_completed()
+
+    print("stopping workload")
     workload.stop()
+
+    print("stopping monitor1")
+    monitor1.stop()
+
+    print("stopping monitor2")
+    monitor2.stop()
+
+    print("stopping gatherer")
+    gatherer.stop()
