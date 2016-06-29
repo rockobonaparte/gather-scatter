@@ -73,6 +73,7 @@ class Gatherer(object):
         self.channel = None
         self.workload_ready = False
         self.monitors_ready = False
+        self.agents_ready = []
 
         self.monitor_aliases = []
 
@@ -98,18 +99,29 @@ class Gatherer(object):
             self.workload_ready = True
             print("propagating ready signal to monitors")
             self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="ready")
+
         elif body_txt == "workload completed":
             self.workload_ready = False
             print("propagating stop signal to monitors")
             self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="stop")
-        elif body_txt == "agent ready":
-            self.monitors_ready = True
+
+        elif body_txt.startswith("agent ready"):
+            ready_agent = body_txt[12:]
+            print("notified that agent %s is ready" % ready_agent)
+
+            if ready_agent not in self.agents_ready:
+                self.agents_ready.append(ready_agent)
+                if len(self.agents_ready) == 2:
+                    self.monitors_ready = True
+
             if self.workload_ready:
                 print("propagating go signal to all receivers")
                 self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="go")
+
         elif body_txt.startswith("identify"):
             agent = body_txt[9:]
             print("Agent %s identified" % agent)
+
         else:
             print("Gatherer is not using the message")
 
@@ -145,7 +157,7 @@ class WorkloadMonitor(object):
         print("Monitor %s received message: %s" % (self.name, body_txt))
         if body_txt == "ready":
             print("Monitor %s is responding that it's ready" % self.name)
-            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="agent ready")
+            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="agent ready %s" % self.name)
         elif body_txt == "go":
             print("Monitor %s is proceeding!" % self.name)
         elif body_txt == "stop":
