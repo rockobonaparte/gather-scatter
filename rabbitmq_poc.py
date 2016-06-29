@@ -11,6 +11,7 @@ class Workload(object):
         self.go_signal = threading.Condition()
 
     def inbound_message(self, ch, method, properties, body):
+#        self.channel.basic_ack(method.delivery_tag)
         body_txt = body.decode("utf-8")
         if body_txt == "go":
             print("Workload was given go signal!")
@@ -28,7 +29,6 @@ class Workload(object):
 
         self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='*')
         self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
-
         self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload ready")
 
         print("Workload has started consuming")
@@ -39,8 +39,19 @@ class Workload(object):
         self.thread.start()
 
     def stop(self):
-        self.connection.close()
+        self.async_exec(lambda: self.connection.close())
+        #self.connection.close()
         self.thread.join()
+
+    def async_exec(self, callback):
+        # We are being naughty and calling the private _acquire_event_dispatch. This is taken from start_consuming().
+        # This should give us a thread-safe break to do whatever other junk we want to do, like get messages sent
+        # from outside the loop or honor a connection close event from outside the loop.
+        with self.connection._acquire_event_dispatch() as dispatch_allowed:
+            if not dispatch_allowed:
+                raise Exception("Could not acquire connection dispatcher")
+            else:
+                callback()
 
     def wait_for_go(self, timeout_seconds):
         with self.go_signal:
@@ -51,7 +62,7 @@ class Workload(object):
 
     def send_completed(self):
         print("Workload has issued stop signal")
-        self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed")
+        self.async_exec(lambda: self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed"))
 #        self.channel.stop_consuming()
 #        self.connection.close()
 
@@ -79,9 +90,10 @@ class Gatherer(object):
         self.channel.start_consuming()
         print("Gatherer has stopped consuming")
 
-
     def inbound_message(self, ch, method, properties, body):
+        #self.channel.basic_ack(method.delivery_tag)
         body_txt = body.decode("utf-8")
+        print("Gatherer: %s" % body_txt)
         if body_txt == "workload ready":
             self.workload_ready = True
             print("propagating ready signal to monitors")
@@ -98,12 +110,25 @@ class Gatherer(object):
         elif body_txt.startswith("identify"):
             agent = body_txt[9:]
             print("Agent %s identified" % agent)
+        else:
+            print("Gatherer is not using the message")
+
+    def async_exec(self, callback):
+        # We are being naughty and calling the private _acquire_event_dispatch. This is taken from start_consuming().
+        # This should give us a thread-safe break to do whatever other junk we want to do, like get messages sent
+        # from outside the loop or honor a connection close event from outside the loop.
+        with self.connection._acquire_event_dispatch() as dispatch_allowed:
+            if not dispatch_allowed:
+                raise Exception("Could not acquire connection dispatcher")
+            else:
+                callback()
 
     def start(self):
         self.thread.start()
 
     def stop(self):
-        self.connection.close()
+        self.async_exec(lambda: self.connection.close())
+        #self.connection.close()
         self.thread.join()
 
 
@@ -115,11 +140,15 @@ class WorkloadMonitor(object):
         self.name = name
 
     def inbound_message(self, ch, method, properties, body):
-        if body == b"ready":
+#        self.channel.basic_ack(method.delivery_tag)
+        body_txt = body.decode("utf-8")
+        print("Monitor %s received message: %s" % (self.name, body_txt))
+        if body_txt == "ready":
+            print("Monitor %s is responding that it's ready" % self.name)
             self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="agent ready")
-        elif body == b"go":
+        elif body_txt == "go":
             print("Monitor %s is proceeding!" % self.name)
-        elif body == b"stop":
+        elif body_txt == "stop":
             print("Monitor %s is stopping!" % self.name)
             self.channel.stop_consuming()
 
@@ -163,11 +192,22 @@ if __name__ == "__main__":
     workload = Workload()
     workload.start()
 
+    print()
+    print("=================================")
+    print("workload is waiting for go signal")
+    print("=================================")
+    print()
+
     workload.wait_for_go(3)
     print("Main program: Workload got go signal and is continuing!")
 
     time.sleep(1.5)
 
+    print()
+    print("=================================")
+    print("workload is sending completion   ")
+    print("=================================")
+    print()
     workload.send_completed()
 
     print("stopping workload")
