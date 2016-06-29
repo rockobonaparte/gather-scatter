@@ -73,7 +73,7 @@ class Gatherer(object):
         self.channel = None
         self.workload_ready = False
         self.monitors_ready = False
-        self.agents_ready = []
+        self.ready_agents = []
 
         self.monitor_aliases = []
 
@@ -94,7 +94,7 @@ class Gatherer(object):
     def inbound_message(self, ch, method, properties, body):
         #self.channel.basic_ack(method.delivery_tag)
         body_txt = body.decode("utf-8")
-        print("Gatherer: %s" % body_txt)
+        print("Gatherer: received %s" % body_txt)
         if body_txt == "workload ready":
             self.workload_ready = True
             print("propagating ready signal to monitors")
@@ -108,15 +108,20 @@ class Gatherer(object):
         elif body_txt.startswith("agent ready"):
             ready_agent = body_txt[12:]
             print("notified that agent %s is ready" % ready_agent)
+            print("agents in pool %s" % str(self.ready_agents))
 
-            if ready_agent not in self.agents_ready:
-                self.agents_ready.append(ready_agent)
-                if len(self.agents_ready) == 2:
+            if ready_agent not in self.ready_agents:
+                self.ready_agents.append(ready_agent)
+                if len(self.ready_agents) == 2:
+                    print("agent %s added to pool, pool now is %s" % (ready_agent, str(self.ready_agents)))
                     self.monitors_ready = True
 
-            if self.workload_ready:
-                print("propagating go signal to all receivers")
-                self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="go")
+                # Placing this one level deeper will reduce spurious go signals. It will only send a go on the
+                # moment that all agents have reported in. If the agents decided to report they are ready multiple
+                # times, that's fine by them, but it won't send another go signal.
+                if self.monitors_ready and self.workload_ready:
+                    print("propagating go signal to all receivers")
+                    self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="go")
 
         elif body_txt.startswith("identify"):
             agent = body_txt[9:]
@@ -210,7 +215,7 @@ if __name__ == "__main__":
     print("=================================")
     print()
 
-    workload.wait_for_go(3)
+    workload.wait_for_go(30)
     print("Main program: Workload got go signal and is continuing!")
 
     time.sleep(1.5)
