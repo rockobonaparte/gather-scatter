@@ -1,6 +1,7 @@
 import pika
 import threading
 import time
+from DeferredBlockingConnection import DeferredBlockingConnection
 
 class Workload(object):
     def __init__(self):
@@ -20,7 +21,7 @@ class Workload(object):
 
 
     def _workload_agent(self):
-        self.connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+        self.connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
         self.channel = self.connection.channel()
 
         result = self.channel.queue_declare(exclusive=True)
@@ -38,18 +39,22 @@ class Workload(object):
         self.thread.start()
 
     def stop(self):
-        self.async_exec(lambda: self.connection.close())
+        #self.async_exec(lambda: self.connection.close())
+        print("Workload is closing connection")
+        self.channel.async_exec(lambda: self.connection.close())
+        print("Workload connection closed")
         self.thread.join()
+        print("Workload thread service joined back to main thread")
 
-    def async_exec(self, callback):
-        # We are being naughty and calling the private _acquire_event_dispatch. This is taken from start_consuming().
-        # This should give us a thread-safe break to do whatever other junk we want to do, like get messages sent
-        # from outside the loop or honor a connection close event from outside the loop.
-        with self.connection._acquire_event_dispatch() as dispatch_allowed:
-            if not dispatch_allowed:
-                raise Exception("Could not acquire connection dispatcher")
-            else:
-                callback()
+    # def async_exec(self, callback):
+    #     # We are being naughty and calling the private _acquire_event_dispatch. This is taken from start_consuming().
+    #     # This should give us a thread-safe break to do whatever other junk we want to do, like get messages sent
+    #     # from outside the loop or honor a connection close event from outside the loop.
+    #     with self.connection._acquire_event_dispatch() as dispatch_allowed:
+    #         if not dispatch_allowed:
+    #             raise Exception("Could not acquire connection dispatcher")
+    #         else:
+    #             callback()
 
     def wait_for_go(self, timeout_seconds):
         with self.go_signal:
@@ -59,8 +64,10 @@ class Workload(object):
             raise Exception("Workload did not receive go signal. It is likely something was aborted")
 
     def send_completed(self):
-        print("Workload has issued stop signal")
-        self.async_exec(lambda: self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed"))
+        print("Workload is issuing stop signal")
+        #self.async_exec(lambda: self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed"))
+        self.channel.async_exec(lambda: self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed"))
+        print("Workload issued stop signal")
 
 class Gatherer(object):
     def __init__(self):
@@ -74,7 +81,7 @@ class Gatherer(object):
         self.monitor_aliases = []
 
     def _gatherer_agent(self):
-        self.connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+        self.connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
         self.channel = self.connection.channel()
 
         self.channel.exchange_declare(exchange='synchronization', type='topic')
@@ -125,21 +132,22 @@ class Gatherer(object):
         else:
             print("Gatherer is not using the message")
 
-    def async_exec(self, callback):
-        # We are being naughty and calling the private _acquire_event_dispatch. This is taken from start_consuming().
-        # This should give us a thread-safe break to do whatever other junk we want to do, like get messages sent
-        # from outside the loop or honor a connection close event from outside the loop.
-        with self.connection._acquire_event_dispatch() as dispatch_allowed:
-            if not dispatch_allowed:
-                raise Exception("Could not acquire connection dispatcher")
-            else:
-                callback()
+    # def async_exec(self, callback):
+    #     # We are being naughty and calling the private _acquire_event_dispatch. This is taken from start_consuming().
+    #     # This should give us a thread-safe break to do whatever other junk we want to do, like get messages sent
+    #     # from outside the loop or honor a connection close event from outside the loop.
+    #     with self.connection._acquire_event_dispatch() as dispatch_allowed:
+    #         if not dispatch_allowed:
+    #             raise Exception("Could not acquire connection dispatcher")
+    #         else:
+    #             callback()
 
     def start(self):
         self.thread.start()
 
     def stop(self):
-        self.async_exec(lambda: self.connection.close())
+        #self.async_exec(lambda: self.connection.close())
+        self.channel.async_exec(lambda: self.connection.close())
         self.thread.join()
 
 
@@ -165,7 +173,7 @@ class WorkloadMonitor(object):
             print("Monitor %s is ignoring message: %s" % (self.name, body_txt))
 
     def _monitor_agent(self):
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+        connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
         self.channel = connection.channel()
 
         self.channel.exchange_declare(exchange='synchronization', type='topic')
