@@ -58,7 +58,6 @@ class DeferredBlockingChannel(pika.adapters.blocking_connection.BlockingChannel)
         promise = Promise(callback)
         with self.callback_queue_lock:
             self.callback_queue.append(promise)
-            print("Increased callback queue by 1 to %s" % len(self.callback_queue))
         promise.wait_until_run(timeout)
 
     def start_consuming(self):
@@ -92,14 +91,13 @@ class DeferredBlockingChannel(pika.adapters.blocking_connection.BlockingChannel)
         while self._consumer_infos:
             with self.callback_queue_lock:
                 for promise in self.callback_queue:
-                    print(">>>Callback queue has %s entries" % len(self.callback_queue))
                     try:
                         promise.callback()
-                        with promise.callback_condition.acquire():
+                        with promise.callback_condition:
                             promise.callback_ran = True
                             promise.callback_condition.notify()
                     except Exception as suppressed:
                         raise
-            print(">>>Processing data events")
-            self.connection.process_data_events(time_limit=None)
+            if self.connection.is_open:
+                self.connection.process_data_events(time_limit=0)
 
