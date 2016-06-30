@@ -11,7 +11,6 @@ class Workload(object):
         self.go_signal = threading.Condition()
 
     def inbound_message(self, ch, method, properties, body):
-#        self.channel.basic_ack(method.delivery_tag)
         body_txt = body.decode("utf-8")
         if body_txt == "go":
             print("Workload was given go signal!")
@@ -40,7 +39,6 @@ class Workload(object):
 
     def stop(self):
         self.async_exec(lambda: self.connection.close())
-        #self.connection.close()
         self.thread.join()
 
     def async_exec(self, callback):
@@ -63,8 +61,6 @@ class Workload(object):
     def send_completed(self):
         print("Workload has issued stop signal")
         self.async_exec(lambda: self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed"))
-#        self.channel.stop_consuming()
-#        self.connection.close()
 
 class Gatherer(object):
     def __init__(self):
@@ -92,7 +88,6 @@ class Gatherer(object):
         print("Gatherer has stopped consuming")
 
     def inbound_message(self, ch, method, properties, body):
-        #self.channel.basic_ack(method.delivery_tag)
         body_txt = body.decode("utf-8")
         print("Gatherer: received %s" % body_txt)
         if body_txt == "workload ready":
@@ -145,7 +140,6 @@ class Gatherer(object):
 
     def stop(self):
         self.async_exec(lambda: self.connection.close())
-        #self.connection.close()
         self.thread.join()
 
 
@@ -157,7 +151,6 @@ class WorkloadMonitor(object):
         self.name = name
 
     def inbound_message(self, ch, method, properties, body):
-#        self.channel.basic_ack(method.delivery_tag)
         body_txt = body.decode("utf-8")
         print("Monitor %s received message: %s" % (self.name, body_txt))
         if body_txt == "ready":
@@ -168,6 +161,8 @@ class WorkloadMonitor(object):
         elif body_txt == "stop":
             print("Monitor %s is stopping!" % self.name)
             self.channel.stop_consuming()
+        else:
+            print("Monitor %s is ignoring message: %s" % (self.name, body_txt))
 
     def _monitor_agent(self):
         connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
