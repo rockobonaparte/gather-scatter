@@ -12,6 +12,9 @@ class RabbitMQService(object):
     def inbound_message(self, ch, method, properties, body):
         pass
 
+    def when_starting(self):
+        pass
+
     def _workload_agent(self):
         self.connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
         self.channel = self.connection.channel()
@@ -21,6 +24,8 @@ class RabbitMQService(object):
 
         self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='*')
         self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
+
+        self.when_starting()
 
         self.channel.start_consuming()
 
@@ -32,13 +37,14 @@ class RabbitMQService(object):
         self.thread.join()
 
 
-class Workload(object):
+class Workload(RabbitMQService):
     def __init__(self):
-        self.thread = threading.Thread(target=self._workload_agent)
-        self.channel = None
-        self.connection = None
+        RabbitMQService.__init__(self)
         self.received_go = False
         self.go_signal = threading.Condition()
+
+    def when_starting(self):
+        self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload ready")
 
     def inbound_message(self, ch, method, properties, body):
         body_txt = body.decode("utf-8")
@@ -47,43 +53,6 @@ class Workload(object):
             with self.go_signal:
                 self.received_go = True
                 self.go_signal.notify()
-
-
-    def _workload_agent(self):
-        self.connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
-        self.channel = self.connection.channel()
-
-        result = self.channel.queue_declare(exclusive=True)
-        queue_name = result.method.queue
-
-        self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='*')
-        self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
-        self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload ready")
-
-        print("Workload has started consuming")
-        self.channel.start_consuming()
-        print("Workload has stopped consuming")
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        #self.async_exec(lambda: self.connection.close())
-        print("Workload is closing connection")
-        self.channel.async_exec(lambda: self.connection.close())
-        print("Workload connection closed")
-        self.thread.join()
-        print("Workload thread service joined back to main thread")
-
-    # def async_exec(self, callback):
-    #     # We are being naughty and calling the private _acquire_event_dispatch. This is taken from start_consuming().
-    #     # This should give us a thread-safe break to do whatever other junk we want to do, like get messages sent
-    #     # from outside the loop or honor a connection close event from outside the loop.
-    #     with self.connection._acquire_event_dispatch() as dispatch_allowed:
-    #         if not dispatch_allowed:
-    #             raise Exception("Could not acquire connection dispatcher")
-    #         else:
-    #             callback()
 
     def wait_for_go(self, timeout_seconds):
         with self.go_signal:
@@ -94,34 +63,17 @@ class Workload(object):
 
     def send_completed(self):
         print("Workload is issuing stop signal")
-        #self.async_exec(lambda: self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed"))
         self.channel.async_exec(lambda: self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed"))
         print("Workload issued stop signal")
 
-class Gatherer(object):
+
+class Gatherer(RabbitMQService):
     def __init__(self):
-        self.thread = threading.Thread(target=self._gatherer_agent)
-        self.connection = None
-        self.channel = None
+        RabbitMQService.__init__(self)
         self.workload_ready = False
         self.monitors_ready = False
         self.ready_agents = []
-
         self.monitor_aliases = []
-
-    def _gatherer_agent(self):
-        self.connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
-        self.channel = self.connection.channel()
-
-        self.channel.exchange_declare(exchange='synchronization', type='topic')
-        result = self.channel.queue_declare(exclusive=True)
-        queue_name = result.method.queue
-
-        self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='*')
-        self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
-        print("Gatherer has started consuming")
-        self.channel.start_consuming()
-        print("Gatherer has stopped consuming")
 
     def inbound_message(self, ch, method, properties, body):
         body_txt = body.decode("utf-8")
@@ -161,31 +113,14 @@ class Gatherer(object):
         else:
             print("Gatherer is not using the message")
 
-    # def async_exec(self, callback):
-    #     # We are being naughty and calling the private _acquire_event_dispatch. This is taken from start_consuming().
-    #     # This should give us a thread-safe break to do whatever other junk we want to do, like get messages sent
-    #     # from outside the loop or honor a connection close event from outside the loop.
-    #     with self.connection._acquire_event_dispatch() as dispatch_allowed:
-    #         if not dispatch_allowed:
-    #             raise Exception("Could not acquire connection dispatcher")
-    #         else:
-    #             callback()
 
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        #self.async_exec(lambda: self.connection.close())
-        self.channel.async_exec(lambda: self.connection.close())
-        self.thread.join()
-
-
-class WorkloadMonitor(object):
-
+class WorkloadMonitor(RabbitMQService):
     def __init__(self, name):
-        self.thread = threading.Thread(target=self._monitor_agent)
-        self.channel = None
+        RabbitMQService.__init__(self)
         self.name = name
+
+    def when_starting(self):
+        self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="identify %s" % self.name)
 
     def inbound_message(self, ch, method, properties, body):
         body_txt = body.decode("utf-8")
@@ -201,26 +136,6 @@ class WorkloadMonitor(object):
         else:
             print("Monitor %s is ignoring message: %s" % (self.name, body_txt))
 
-    def _monitor_agent(self):
-        connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
-        self.channel = connection.channel()
-
-        self.channel.exchange_declare(exchange='synchronization', type='topic')
-        result = self.channel.queue_declare(exclusive=True)
-        queue_name = result.method.queue
-
-        self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='gatherer')
-        self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
-        self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="identify %s" % self.name)
-
-        self.channel.start_consuming()
-        print("Monitor %s has stopped consuming" % self.name)
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.thread.join()
 
 if __name__ == "__main__":
     gatherer = Gatherer()
