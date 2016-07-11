@@ -1,3 +1,7 @@
+import pika
+import threading
+import datetime
+
 __author__ = "Adam Preble"
 __copyright__ = "Copyright 2016, Adam Preble"
 __credits__ = ["Adam Preble"]
@@ -14,9 +18,6 @@ handled deferred execution of the activities the other threads need run. The con
 process outside of its critical section in order to keep communication operations properly-synchronized.
 '''
 
-import pika
-import threading
-import datetime
 
 class Promise(object):
     """
