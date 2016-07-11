@@ -23,6 +23,7 @@ class Promise(object):
         self.callback = callback
         self.callback_ran = False
         self.callback_condition = threading.Condition()
+        self.exception = None
 
     def wait_until_run(self, timeout=3):
         start_time = datetime.datetime.now()
@@ -32,6 +33,16 @@ class Promise(object):
                 local_callback_ran = self.callback_ran
                 if not local_callback_ran:
                     self.callback_condition.wait(timeout=timeout)
+
+        if self.exception is not None:
+            raise self.exception
+
+
+def close_connection_suppressed(connection):
+    try:
+        connection.close()
+    except pika.exceptions.ConnectionClosed as suppressed:
+        pass
 
 
 class DeferredBlockingConnection(pika.BlockingConnection):
@@ -112,8 +123,9 @@ class DeferredBlockingChannel(pika.adapters.blocking_connection.BlockingChannel)
                         with promise.callback_condition:
                             promise.callback_ran = True
                             promise.callback_condition.notify()
-                    except Exception as suppressed:
-                        raise
+                    except Exception as pass_forward:
+                        promise.exception = pass_forward
+
             if self.connection.is_open:
                 self.connection.process_data_events(time_limit=0)
 
