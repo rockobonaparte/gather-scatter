@@ -19,13 +19,37 @@ import threading
 import datetime
 
 class Promise(object):
+    """
+    A contract with the DeferredBlockingConnection to execute the given callback command when it is safe to do so.
+    This will store the function to call. Provide it as a function taking no arguments--lambdas are good for this.
+    If there was an exception running the command, the exception property will be set to something other than None.
+    When it is necessary to have the callback run before the thread proceeds, using wait_until_run() to block until
+    the callback was completed. It will throw any exception encountered along the way.
+
+    Also, you can check the retval property for any return values.
+    """
+
     def __init__(self, callback):
+        """
+        Creates a new promise based on the given callback.
+        :param callback: A function taking no arguments allowed to return what it wants. Use lambdas to massage your
+        callback to fit this pattern.
+        :return: (constructor)
+        """
         self.callback = callback
         self.callback_ran = False
         self.callback_condition = threading.Condition()
         self.exception = None
+        self.retval = None
 
     def wait_until_run(self, timeout=3):
+        """
+        Blocks this thread until either the callback has been run or the timeout was exceeded.
+        :param timeout: Wait timeout in seconds. It defaults to three seconds.
+        :return: (nothing)
+        :except: TimeoutError if the timeout was exceeded.
+                 Exception for any other exception encountered when running the callback.
+        """
         start_time = datetime.datetime.now()
         local_callback_ran = False
         while (datetime.datetime.now()-start_time).total_seconds() < timeout and not local_callback_ran:
@@ -39,6 +63,11 @@ class Promise(object):
 
 
 def close_connection_suppressed(connection):
+    """
+    Helper for closing a connection while disregarding if the connection is already closed.
+    :param connection: The pika connection to close.
+    :return: (nothing)
+    """
     try:
         connection.close()
     except pika.exceptions.ConnectionClosed as suppressed:
@@ -46,6 +75,12 @@ def close_connection_suppressed(connection):
 
 
 class DeferredBlockingConnection(pika.BlockingConnection):
+    """
+    Subclass of pika.BlockingConnection that provides a helper for creating a nonblocking channel instead of a regular
+    blocking channel. This is used in conjunction with Promises to all other threads to work with this connection in a
+    thread-safe way.
+    """
+
     def __init__(self, parameters=None, _impl_class=None):
         pika.BlockingConnection.__init__(self, parameters, _impl_class)
 
@@ -71,21 +106,35 @@ class DeferredBlockingConnection(pika.BlockingConnection):
             # Drive I/O until Channel.Open-ok
             channel._flush_output(opened_args.is_ready)
 
-
         return channel
 
 
 class DeferredBlockingChannel(pika.adapters.blocking_connection.BlockingChannel):
+    """
+    Subclass of pika.BlockingChannel that introduces a blocking queue. Participants from other threads can enqueue
+    operations to run on this thread, which will be accomplished using Promise objects. This connection will complete
+    these commands when it isn't otherwise running internal connection operations.
+    """
+
     def __init__(self, channel_impl, connection):
         pika.adapters.blocking_connection.BlockingChannel.__init__(self, channel_impl, connection)
         self.callback_queue = []
         self.callback_queue_lock = threading.Lock()
 
     def async_exec(self, callback, timeout=3):
+        """
+        Schedules a callback to be run at a thread-safe interval within this channel. From the perspective of the
+        caller, this is an asynchronous operation, even if it's perfectly-synchronous internally. Use this to utilize
+        this channel from outside of the thread that owns it.
+        :param callback: The callback to execute.
+        :param timeout: The amount of time in seconds to wait for the command to complete.
+        :return: The return value from the callback, if there was one. Otherwise, it returns None.
+        """
         promise = Promise(callback)
         with self.callback_queue_lock:
             self.callback_queue.append(promise)
         promise.wait_until_run(timeout)
+        return promise.retval
 
     def start_consuming(self):
         """Overrides BlockingChannel.start_consuming. At time of override,
@@ -119,7 +168,7 @@ class DeferredBlockingChannel(pika.adapters.blocking_connection.BlockingChannel)
             with self.callback_queue_lock:
                 for promise in self.callback_queue:
                     try:
-                        promise.callback()
+                        promise.retval = promise.callback()
                         with promise.callback_condition:
                             promise.callback_ran = True
                             promise.callback_condition.notify()
