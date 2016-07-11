@@ -1,3 +1,19 @@
+__author__ = "Adam Preble"
+__copyright__ = "Copyright 2016, Adam Preble"
+__credits__ = ["Adam Preble"]
+__license__ = "personal"
+__version__ = "1.0.0"
+__maintainer__ = "Adam Preble"
+__email__ = "adam.preble@gmail.com"
+__status__ = "Demonstration"
+
+'''
+Extension of pika's BlockingConnection to provide a blocking opportunity for outside threads to insert communication
+operations for it to process. In this way, it is made thread-safe in a basic way. It uses the promises pattern to
+handled deferred execution of the activities the other threads need run. The connection uses a queue that it will
+process outside of its critical section in order to keep communication operations properly-synchronized.
+'''
+
 import pika
 import threading
 import datetime
