@@ -2,12 +2,14 @@ import pika
 import threading
 import time
 from DeferredBlockingConnection import DeferredBlockingConnection
+from DeferredBlockingConnection import close_connection_suppressed
 
 class RabbitMQService(object):
-    def __init__(self):
+    def __init__(self, exchange_name="gather_scatter"):
         self.thread = threading.Thread(target=self._workload_agent)
         self.channel = None
         self.connection = None
+        self.exchange_name = exchange_name
 
     def inbound_message(self, ch, method, properties, body):
         pass
@@ -19,10 +21,12 @@ class RabbitMQService(object):
         self.connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
         self.channel = self.connection.channel()
 
+        self.channel.exchange_declare(exchange=self.exchange_name, type='topic')
+
         result = self.channel.queue_declare(exclusive=True)
         queue_name = result.method.queue
 
-        self.channel.queue_bind(exchange='synchronization', queue=queue_name, routing_key='*')
+        self.channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key='*')
         self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
 
         self.when_starting()
@@ -33,7 +37,7 @@ class RabbitMQService(object):
         self.thread.start()
 
     def stop(self):
-        self.channel.async_exec(lambda: self.connection.close())
+        self.channel.async_exec(lambda: close_connection_suppressed(self.connection))
         self.thread.join()
 
 
@@ -44,7 +48,7 @@ class Workload(RabbitMQService):
         self.go_signal = threading.Condition()
 
     def when_starting(self):
-        self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload ready")
+        self.channel.basic_publish(exchange=self.exchange_name, routing_key='workload', body="workload ready")
 
     def inbound_message(self, ch, method, properties, body):
         body_txt = body.decode("utf-8")
@@ -63,7 +67,7 @@ class Workload(RabbitMQService):
 
     def send_completed(self):
         print("Workload is issuing stop signal")
-        self.channel.async_exec(lambda: self.channel.basic_publish(exchange='synchronization', routing_key='workload', body="workload completed"))
+        self.channel.async_exec(lambda: self.channel.basic_publish(exchange=self.exchange_name, routing_key='workload', body="workload completed"))
         print("Workload issued stop signal")
 
 
@@ -81,12 +85,12 @@ class Gatherer(RabbitMQService):
         if body_txt == "workload ready":
             self.workload_ready = True
             print("propagating ready signal to monitors")
-            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="ready")
+            self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="ready")
 
         elif body_txt == "workload completed":
             self.workload_ready = False
             print("propagating stop signal to monitors")
-            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="stop")
+            self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="stop")
 
         elif body_txt.startswith("agent ready"):
             ready_agent = body_txt[12:]
@@ -104,7 +108,7 @@ class Gatherer(RabbitMQService):
                 # times, that's fine by them, but it won't send another go signal.
                 if self.monitors_ready and self.workload_ready:
                     print("propagating go signal to all receivers")
-                    self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="go")
+                    self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="go")
 
         elif body_txt.startswith("identify"):
             agent = body_txt[9:]
@@ -120,14 +124,14 @@ class WorkloadMonitor(RabbitMQService):
         self.name = name
 
     def when_starting(self):
-        self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="identify %s" % self.name)
+        self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="identify %s" % self.name)
 
     def inbound_message(self, ch, method, properties, body):
         body_txt = body.decode("utf-8")
         print("Monitor %s received message: %s" % (self.name, body_txt))
         if body_txt == "ready":
             print("Monitor %s is responding that it's ready" % self.name)
-            self.channel.basic_publish(exchange='synchronization', routing_key='gatherer', body="agent ready %s" % self.name)
+            self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="agent ready %s" % self.name)
         elif body_txt == "go":
             print("Monitor %s is proceeding!" % self.name)
         elif body_txt == "stop":
@@ -162,7 +166,7 @@ if __name__ == "__main__":
     print("=================================")
     print()
 
-    workload.wait_for_go(30)
+    workload.wait_for_go(3)
     print("Main program: Workload got go signal and is continuing!")
 
     time.sleep(1.5)
