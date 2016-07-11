@@ -1,44 +1,6 @@
-import pika
+from RabbitMQService import RabbitMQService
 import threading
 import time
-from DeferredBlockingConnection import DeferredBlockingConnection
-from DeferredBlockingConnection import close_connection_suppressed
-
-class RabbitMQService(object):
-    def __init__(self, exchange_name="gather_scatter"):
-        self.thread = threading.Thread(target=self._workload_agent)
-        self.channel = None
-        self.connection = None
-        self.exchange_name = exchange_name
-
-    def inbound_message(self, ch, method, properties, body):
-        pass
-
-    def when_starting(self):
-        pass
-
-    def _workload_agent(self):
-        self.connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
-        self.channel = self.connection.channel()
-
-        self.channel.exchange_declare(exchange=self.exchange_name, type='topic')
-
-        result = self.channel.queue_declare(exclusive=True)
-        queue_name = result.method.queue
-
-        self.channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key='*')
-        self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
-
-        self.when_starting()
-
-        self.channel.start_consuming()
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.channel.async_exec(lambda: close_connection_suppressed(self.connection))
-        self.thread.join()
 
 
 class Workload(RabbitMQService):
