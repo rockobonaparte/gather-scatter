@@ -136,6 +136,34 @@ class WorkloadMonitor(RabbitMQService):
     def __init__(self, name):
         RabbitMQService.__init__(self)
         self.name = name
+        self.workload_ready = False
+        self.go_signal = threading.Condition()
+        self.monitor_ready = False
+        self.monitor_start_lock = threading.Lock()
+        self.received_go = False
+
+    def _send_ready(self):
+        print("Monitor %s is responding that it's ready" % self.name)
+        self.channel.async_exec(lambda: self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="agent ready %s" % self.name))
+
+    def alert_monitor_ready(self):
+        with self.monitor_start_lock:
+            self.monitor_ready = True
+            if self.workload_ready:
+                self._send_ready()
+
+    def wait_for_go(self, timeout_seconds):
+        """
+        Notifies the gatherer that this monitor is ready to go. At this point, it will block the timeout period until
+        the gatherer gives it the go-ahead to proceed. This allows other, unknown agents to proceed.
+        :param timeout_seconds: The time to wait for a go-ahead from the gatherer.
+        :return:
+        """
+        with self.go_signal:
+            if not self.received_go:
+                self.go_signal.wait(timeout_seconds)
+        if not self.received_go:
+            raise Exception("Monitor did not receive go signal before timeout period")
 
     def when_starting(self):
         self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="identify %s" % self.name)
@@ -144,10 +172,16 @@ class WorkloadMonitor(RabbitMQService):
         body_txt = body.decode("utf-8")
         print("Monitor %s received message: %s" % (self.name, body_txt))
         if body_txt == "ready":
-            print("Monitor %s is responding that it's ready" % self.name)
-            self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="agent ready %s" % self.name)
+            with self.monitor_start_lock:
+                self.workload_ready = True
+                if self.monitor_ready:
+                    self._send_ready()
         elif body_txt == "go":
             print("Monitor %s is proceeding!" % self.name)
+            with self.go_signal:
+                self.received_go = True
+                self.go_signal.notify()
+
         elif body_txt == "stop":
             print("Monitor %s is stopping!" % self.name)
             self.channel.stop_consuming()
