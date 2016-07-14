@@ -75,6 +75,16 @@ class Workload(RabbitMQService):
         print("Workload issued stop signal")
 
 
+class MonitorRecord:
+    def __init__(self, alias):
+        self.alias = alias
+        self.ready = False
+
+    def reset(self):
+        self.ready = False
+        self.notified = False
+
+
 class Gatherer(RabbitMQService):
     """
     A secondary broker that manages communications between the workload and monitors. Why the extra complexity beyond
@@ -90,46 +100,68 @@ class Gatherer(RabbitMQService):
         RabbitMQService.__init__(self)
         self.workload_ready = False
         self.monitors_ready = False
-        self.ready_agents = []
-        self.monitor_aliases = []
+        self.monitor_records = []
+
+    def _record_monitors_notified(self):
+        for record in self.monitor_records:
+            record.notified = True
+
+    def _already_registered(self, agent):
+        for record in self.monitor_records:
+            if record.alias == agent:
+                return True
+        return False
 
     def inbound_message(self, ch, method, properties, body):
         body_txt = body.decode("utf-8")
         print("Gatherer: received %s" % body_txt)
         if body_txt == "workload ready":
             self.workload_ready = True
-            print("propagating ready signal to monitors")
-            self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="ready")
+
+            if not self.monitors_ready:
+                print("Gatherer propagating ready signal to monitors")
+                self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="ready")
+            else:
+                print("Gatherer propagating go signal to all receivers")
+                self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="go")
+                self._record_monitors_notified()
 
         elif body_txt == "workload completed":
             self.workload_ready = False
-            print("propagating stop signal to monitors")
+            print("Gatherer propagating stop signal to monitors")
             self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="stop")
 
         elif body_txt.startswith("agent ready"):
             ready_agent = body_txt[12:]
-            print("notified that agent %s is ready" % ready_agent)
-            print("agents in pool %s" % str(self.ready_agents))
+            print("Gatherer notified that agent %s is ready" % ready_agent)
+            #print("Gatherer agents in pool %s" % str(self.monitor_records))
 
-            if ready_agent not in self.ready_agents:
-                self.ready_agents.append(ready_agent)
-                if len(self.ready_agents) == 2:
-                    print("agent %s added to pool, pool now is %s" % (ready_agent, str(self.ready_agents)))
+            if not self._already_registered(ready_agent):
+                record = MonitorRecord(ready_agent)
+                record.ready = True
+                self.monitor_records.append(record)
+                if len(self.monitor_records) == 2:
+                    #print("agent %s added to pool, pool now is %s" % (ready_agent, str(self.monitor_records)))
                     self.monitors_ready = True
 
                 # Placing this one level deeper will reduce spurious go signals. It will only send a go on the
                 # moment that all agents have reported in. If the agents decided to report they are ready multiple
                 # times, that's fine by them, but it won't send another go signal.
                 if self.monitors_ready and self.workload_ready:
-                    print("propagating go signal to all receivers")
+                    print("Gatherer propagating go signal to all receivers")
                     self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="go")
+                    self._record_monitors_notified()
+
+            else:
+                print("Gatherer: Agent %s is already registered. Skipping" % ready_agent)
+
 
         elif body_txt.startswith("identify"):
             agent = body_txt[9:]
             print("Agent %s identified" % agent)
 
         else:
-            print("Gatherer is not using the message")
+            print("Gatherer is not using the message: %s" % body_txt)
 
 
 class WorkloadMonitor(RabbitMQService):
@@ -141,22 +173,26 @@ class WorkloadMonitor(RabbitMQService):
         self.monitor_ready = False
         self.monitor_start_lock = threading.Lock()
         self.received_go = False
+        self.sent_ready = False
 
     def _send_ready(self):
-        print("Monitor %s is responding that it's ready" % self.name)
-        self.channel.async_exec(lambda: self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="agent ready %s" % self.name))
+        if self.sent_ready:
+            print("Monitor %s already stated that it was ready" % self.name)
+        else:
+            print("Monitor %s is responding that it's ready" % self.name)
+            self.channel.async_exec(lambda: self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="agent ready %s" % self.name))
+            self.sent_ready = True
 
     def alert_monitor_ready(self):
         with self.monitor_start_lock:
             self.monitor_ready = True
-            if self.workload_ready:
-                self._send_ready()
+            self._send_ready()
 
-    def wait_for_go(self, timeout_seconds):
+    def wait_for_go(self, timeout_seconds=60):
         """
         Notifies the gatherer that this monitor is ready to go. At this point, it will block the timeout period until
         the gatherer gives it the go-ahead to proceed. This allows other, unknown agents to proceed.
-        :param timeout_seconds: The time to wait for a go-ahead from the gatherer.
+        :param timeout_seconds: The time to wait for a go-ahead from the gatherer. The default is 60 seconds.
         :return:
         """
         with self.go_signal:
@@ -202,15 +238,26 @@ if __name__ == "__main__":
     monitor1 = WorkloadMonitor("agent1")
     monitor1.start()
 
-    monitor2 = WorkloadMonitor("agent2")
-    monitor2.start()
+    #monitor2 = WorkloadMonitor("agent2")
+    #monitor2.start()
 
     # We have a race condition here where a monitor showing up right when the workload is about to
     # signal will get missed. Ideally, this wouldn't really be that big of a deal...
-    time.sleep(3)
+    time.sleep(1)
 
     workload = Workload()
     workload.start()
+
+    print()
+    print("=================================")
+    print("Monitors are reporting ready")
+    print("=================================")
+    print()
+
+    monitor1.alert_monitor_ready()
+    #monitor2.alert_monitor_ready()
+
+    time.sleep(3)
 
     print()
     print("=================================")
@@ -220,6 +267,9 @@ if __name__ == "__main__":
 
     workload.wait_for_go(3)
     print("Main program: Workload got go signal and is continuing!")
+
+    monitor1.wait_for_go()
+    #monitor2.wait_for_go()
 
     time.sleep(1.5)
 
@@ -236,8 +286,8 @@ if __name__ == "__main__":
     print("stopping monitor1")
     monitor1.stop()
 
-    print("stopping monitor2")
-    monitor2.stop()
+    #print("stopping monitor2")
+    #monitor2.stop()
 
     print("stopping gatherer")
     gatherer.stop()
