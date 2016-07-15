@@ -176,6 +176,8 @@ class DeferredBlockingChannel(pika.adapters.blocking_connection.BlockingChannel)
                     except Exception as pass_forward:
                         promise.exception = pass_forward
 
+                self.callback_queue = []
+
             if self.connection.is_open:
                 self.connection.process_data_events(time_limit=0)
 

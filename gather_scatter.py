@@ -238,14 +238,15 @@ if __name__ == "__main__":
     monitor1 = WorkloadMonitor("agent1")
     monitor1.start()
 
-    #monitor2 = WorkloadMonitor("agent2")
-    #monitor2.start()
+    monitor2 = WorkloadMonitor("agent2")
+    monitor2.start()
 
     # We have a race condition here where a monitor showing up right when the workload is about to
     # signal will get missed. Ideally, this wouldn't really be that big of a deal...
     time.sleep(1)
 
     workload = Workload()
+
     workload.start()
 
     print()
@@ -255,9 +256,7 @@ if __name__ == "__main__":
     print()
 
     monitor1.alert_monitor_ready()
-    #monitor2.alert_monitor_ready()
-
-    time.sleep(3)
+    monitor2.alert_monitor_ready()
 
     print()
     print("=================================")
@@ -269,7 +268,7 @@ if __name__ == "__main__":
     print("Main program: Workload got go signal and is continuing!")
 
     monitor1.wait_for_go()
-    #monitor2.wait_for_go()
+    monitor2.wait_for_go()
 
     time.sleep(1.5)
 
@@ -286,8 +285,8 @@ if __name__ == "__main__":
     print("stopping monitor1")
     monitor1.stop()
 
-    #print("stopping monitor2")
-    #monitor2.stop()
+    print("stopping monitor2")
+    monitor2.stop()
 
     print("stopping gatherer")
     gatherer.stop()
