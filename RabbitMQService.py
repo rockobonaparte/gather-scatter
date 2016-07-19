@@ -77,6 +77,15 @@ class RabbitMQService(object):
         the dedicated thread.
         :return: (nothing)
         """
+        self.channel.start_consuming()
+
+        self.when_stopping()
+
+    def start(self):
+        """
+        Starts the thread that runs this service. This will initiate communications.
+        :return:
+        """
         self.connection = DeferredBlockingConnection(pika.ConnectionParameters(host='localhost'))
         self.channel = self.connection.channel()
 
@@ -90,15 +99,6 @@ class RabbitMQService(object):
 
         self.when_starting()
 
-        self.channel.start_consuming()
-
-        self.when_stopping()
-
-    def start(self):
-        """
-        Starts the thread that runs this service. This will initiate communications.
-        :return:
-        """
         self.thread.start()
 
     def stop(self, timeout_s=30):
