@@ -1,4 +1,5 @@
 from RabbitMQService import RabbitMQService
+import agent_whitelist
 import threading
 import time
 
@@ -96,35 +97,19 @@ class Gatherer(RabbitMQService):
     One of these should normally be running. It is mandatory to have a gatherer if there really are any monitors out
     there.
     """
-    def __init__(self):
+    def __init__(self, whitelist=[]):
         RabbitMQService.__init__(self)
         self.workload_ready = False
         self.monitors_ready = False
-        self.monitor_records = []
-
-    def _record_monitors_notified(self):
-        for record in self.monitor_records:
-            record.notified = True
-
-    def _already_registered(self, agent):
-        for record in self.monitor_records:
-            if record.alias == agent:
-                return True
-        return False
+        self.monitor_records = agent_whitelist.AgentWhitelist(whitelist)
+        self.sent_go = False        # Helps curve sending excessive go signals
 
     def inbound_message(self, ch, method, properties, body):
         body_txt = body.decode("utf-8")
         print("Gatherer: received %s" % body_txt)
         if body_txt == "workload ready":
             self.workload_ready = True
-
-            if not self.monitors_ready:
-                print("Gatherer propagating ready signal to monitors")
-                self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="ready")
-            else:
-                print("Gatherer propagating go signal to all receivers")
-                self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="go")
-                self._record_monitors_notified()
+            self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="ready")
 
         elif body_txt == "workload completed":
             self.workload_ready = False
@@ -134,27 +119,10 @@ class Gatherer(RabbitMQService):
         elif body_txt.startswith("agent ready"):
             ready_agent = body_txt[12:]
             print("Gatherer notified that agent %s is ready" % ready_agent)
-            #print("Gatherer agents in pool %s" % str(self.monitor_records))
 
-            if not self._already_registered(ready_agent):
-                record = MonitorRecord(ready_agent)
-                record.ready = True
-                self.monitor_records.append(record)
-                if len(self.monitor_records) == 2:
-                    #print("agent %s added to pool, pool now is %s" % (ready_agent, str(self.monitor_records)))
-                    self.monitors_ready = True
-
-                # Placing this one level deeper will reduce spurious go signals. It will only send a go on the
-                # moment that all agents have reported in. If the agents decided to report they are ready multiple
-                # times, that's fine by them, but it won't send another go signal.
-                if self.monitors_ready and self.workload_ready:
-                    print("Gatherer propagating go signal to all receivers")
-                    self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="go")
-                    self._record_monitors_notified()
-
-            else:
-                print("Gatherer: Agent %s is already registered. Skipping" % ready_agent)
-
+            self.monitor_records.add_reported(ready_agent)
+            if self.monitor_records.all_reported():
+                self.monitors_ready = True
 
         elif body_txt.startswith("identify"):
             agent = body_txt[9:]
@@ -162,6 +130,11 @@ class Gatherer(RabbitMQService):
 
         else:
             print("Gatherer is not using the message: %s" % body_txt)
+
+        if self.monitors_ready and self.workload_ready and not self.sent_go:
+            print("Gatherer propagating go signal to all receivers")
+            self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="go")
+            self.sent_go = True
 
 
 class WorkloadMonitor(RabbitMQService):
@@ -226,7 +199,7 @@ class WorkloadMonitor(RabbitMQService):
 
 
 if __name__ == "__main__":
-    gatherer = Gatherer()
+    gatherer = Gatherer(["agent1", "agent2"])
     gatherer.start()
 
     print()
