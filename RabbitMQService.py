@@ -44,13 +44,23 @@ class RabbitMQService(object):
         self.connection = None
         self.exchange_name = exchange_name
 
-    def inbound_message(self, ch, method, properties, body):
+    def _inbound_callback(self, ch, method, properties, body):
         """
         Callback for inbound messages. This is a pass-through for the callback to pika's channel.basic_consume.
         :param ch: The inbound channel.
         :param method: The RabbitMQ delivery method used, as interpreted by pika.
         :param properties: The RabbitMQ message properties, as interpreted by pika.
         :param body: The body of the message.
+        :return: (nothing)
+        """
+        body_txt = body.decode("utf-8")
+        self.inbound_message(body_txt)
+
+    def inbound_message(self, message):
+        """
+        Callback for inbound message bodies, converted to UTF-8 format. This is the main message receiver that
+        subclasses implement to receive messages.
+        :param message: The message received, as a UTF-8 string.
         :return: (nothing)
         """
         pass
@@ -95,7 +105,7 @@ class RabbitMQService(object):
         queue_name = result.method.queue
 
         self.channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key='*')
-        self.channel.basic_consume(self.inbound_message, queue=queue_name, no_ack=True)
+        self.channel.basic_consume(self._inbound_callback, queue=queue_name, no_ack=True)
 
         self.when_starting()
 

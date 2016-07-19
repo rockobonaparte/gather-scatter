@@ -45,8 +45,7 @@ class Workload(RabbitMQService):
     def when_starting(self):
         self.channel.basic_publish(exchange=self.exchange_name, routing_key='workload', body="workload ready")
 
-    def inbound_message(self, ch, method, properties, body):
-        body_txt = body.decode("utf-8")
+    def inbound_message(self, body_txt):
         if body_txt == "go":
             print("Workload was given go signal!")
             with self.go_signal:
@@ -104,8 +103,7 @@ class Gatherer(RabbitMQService):
         self.monitor_records = agent_whitelist.AgentWhitelist(whitelist)
         self.sent_go = False        # Helps curve sending excessive go signals
 
-    def inbound_message(self, ch, method, properties, body):
-        body_txt = body.decode("utf-8")
+    def inbound_message(self, body_txt):
         print("Gatherer: received %s" % body_txt)
         if body_txt == "workload ready":
             self.workload_ready = True
@@ -174,8 +172,7 @@ class WorkloadMonitor(RabbitMQService):
     def when_starting(self):
         self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="identify %s" % self.name)
 
-    def inbound_message(self, ch, method, properties, body):
-        body_txt = body.decode("utf-8")
+    def inbound_message(self, body_txt):
         print("Monitor %s received message: %s" % (self.name, body_txt))
         if body_txt == "ready":
             with self.monitor_start_lock:
