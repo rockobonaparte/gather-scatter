@@ -19,6 +19,21 @@ messaging in general--to coordinate this kind of thing. Generally, it is less fu
 sockets or Twisted too much, so it is in a good position for my kind of end user. I have done a similar thing before
 using Twisted, and it takes a lot of code to make this all work together.
 
+Setup:
+Install RabbitMQ:
+https://www.rabbitmq.com/download.html
+
+You may also need an Erlang runtime. The Windows installer takes care of this. Presumably, you can just install this
+from some package installer from Linux and autoresolve dependencies. You will need to have the RabbitMQ service running,
+but it only needs to go to localhost. This example doesn't even provide the option to go out over the real network.
+
+You will also need the Python pika module, which exposes RabbitMQ to Python. You can install that through pip:
+
+0. [On Windows] go to your Python interpreter's scripts directory (C:\Python33\scripts)
+1. Run: pip install pika
+
+This software was written to target Python 3.3.4. If you are having trouble, try that interpreter.
+
 Usage:
 You can just run gather_scatter.py, which runs a demonstration of all agents in one application, but it is
 overwhelming. Rather, you should try to run the different major actors in different shells. Run them in this order:
@@ -37,8 +52,6 @@ definitely needs to synchronize on two particular agents.
 
 Nothing will progress until agent2 is launched because the gatherer is waiting on it, and the other agents are waiting
 on the gatherer.
-
-
 
 Question: What if I wanted to make this more robust?
 
