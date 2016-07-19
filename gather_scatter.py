@@ -119,10 +119,7 @@ class Gatherer(RabbitMQService):
         elif body_txt.startswith("agent ready"):
             ready_agent = body_txt[12:]
             print("Gatherer notified that agent %s is ready" % ready_agent)
-
             self.monitor_records.add_reported(ready_agent)
-            if self.monitor_records.all_reported():
-                self.monitors_ready = True
 
         elif body_txt.startswith("identify"):
             agent = body_txt[9:]
@@ -131,7 +128,7 @@ class Gatherer(RabbitMQService):
         else:
             print("Gatherer is not using the message: %s" % body_txt)
 
-        if self.monitors_ready and self.workload_ready and not self.sent_go:
+        if self.monitor_records.all_reported() and self.workload_ready and not self.sent_go:
             print("Gatherer propagating go signal to all receivers")
             self.channel.basic_publish(exchange=self.exchange_name, routing_key='gatherer', body="go")
             self.sent_go = True
